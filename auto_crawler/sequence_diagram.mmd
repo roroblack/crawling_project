@@ -1,0 +1,78 @@
+sequenceDiagram
+    participant User as 사용자 (브라우저)
+    participant App as app.py
+    participant DB as db.py
+    participant Svc as CrawlService
+    participant Sch as SchedulerManager
+    participant Crl as NaverNewsCrawler
+    participant MySQL as MySQL
+
+    Note over App: 앱 시작
+    App->>DB: init_table()
+    DB->>MySQL: CREATE TABLE IF NOT EXISTS crawl_news
+    MySQL-->>DB: OK
+    App->>Svc: CrawlService() 생성
+    Svc->>DB: get_engine()
+    DB-->>Svc: engine
+    Svc->>Crl: NaverNewsCrawler() 생성
+    App->>Sch: SchedulerManager() 생성
+    Sch->>Svc: CrawlService() 생성 (스케줄러 전용)
+    App->>Sch: start()
+    Sch->>Sch: BackgroundScheduler.start()
+
+    Note over User,App: 즉시 크롤링 실행
+    User->>App: "즉시 크롤링 실행" 버튼 클릭
+    App->>Svc: run_crawling(limit)
+    Svc->>Crl: crawl(limit)
+    Crl->>Crl: _get_html() → ThreadPoolExecutor
+    Crl->>Crl: _run_playwright() → ProactorEventLoop
+    Crl->>Crl: _async_get_html()
+    Crl-->>Crl: Playwright로 네이버 뉴스 접속 및 HTML 수집
+    Crl->>Crl: _parse(html, limit)
+    Crl-->>Svc: List[CrawlItem]
+    Svc->>MySQL: INSERT INTO crawl_news (for each item)
+    MySQL-->>Svc: OK
+    Svc-->>App: count (저장 건수)
+    App-->>User: "N건 수집 완료" 메시지
+
+    Note over User,App: 데이터 조회
+    User->>App: "수집 데이터" 탭 열기
+    App->>Svc: find_all()
+    Svc->>MySQL: SELECT * FROM crawl_news ORDER BY crawled_at DESC
+    MySQL-->>Svc: DataFrame
+    Svc-->>App: DataFrame
+    App-->>User: 테이블 출력
+
+    Note over User,App: 통계 조회
+    User->>App: "수집 통계" 탭 열기
+    App->>Svc: find_count_by_time()
+    Svc->>MySQL: SELECT crawl_time, COUNT(*) GROUP BY crawl_time
+    MySQL-->>Svc: DataFrame
+    Svc-->>App: DataFrame
+    App-->>User: 막대그래프 출력
+
+    Note over User,App: Interval 스케줄 등록
+    User->>App: "Interval 작업 등록" 버튼 클릭
+    App->>Sch: add_interval_job(minutes, limit)
+    Sch->>Sch: remove_job() (기존 작업 삭제)
+    Sch->>Sch: scheduler.add_job(run_crawling, trigger="interval")
+    App-->>User: "N분마다 자동 크롤링 등록 완료"
+
+    Note over User,App: Cron 스케줄 등록
+    User->>App: "Cron 작업 등록" 버튼 클릭
+    App->>Sch: add_cron_job(hour, minute, limit)
+    Sch->>Sch: remove_job()
+    Sch->>Sch: scheduler.add_job(run_crawling, trigger="cron")
+    App-->>User: "매일 N시 N분 등록 완료"
+
+    Note over Sch,MySQL: 자동 실행 (백그라운드)
+    Sch-->>Svc: run_crawling(limit) [interval/cron 트리거]
+    Svc->>Crl: crawl(limit)
+    Crl-->>Svc: List[CrawlItem]
+    Svc->>MySQL: INSERT INTO crawl_news
+
+    Note over User,App: 스케줄 삭제
+    User->>App: "스케줄 작업 삭제" 버튼 클릭
+    App->>Sch: remove_job()
+    Sch->>Sch: scheduler.remove_job("auto_crawling_job")
+    App-->>User: "자동 크롤링 작업이 삭제되었습니다."

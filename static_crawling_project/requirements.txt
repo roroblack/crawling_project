@@ -1,0 +1,4 @@
+
+requests # request 모듈써도 됨
+beautifulsoup4
+mysql-connector-python

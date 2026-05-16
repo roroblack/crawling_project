@@ -1,0 +1,10 @@
+streamlit
+pandas
+plotly
+pymysql
+sqlalchemy
+python-dotenv # dotenv
+beautifulsoup4
+lxml
+playwright
+apscheduler
