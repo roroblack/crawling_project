@@ -1,0 +1,73 @@
+# ===== 가상환경 =====
+.venv/
+venv/
+env/
+
+# ===== Python 캐시 =====
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ===== 환경변수 / 시크릿 (절대 커밋 금지) =====
+.env
+.env.*
+# .env.example 도 키 샘플을 포함할 수 있으므로 무시
+.env.example
+scripts/service_account.json
+*.json.key
+
+# ===== VS Code =====
+.vscode/
+*.code-workspace
+
+# ===== Streamlit 설정 =====
+.streamlit/
+
+# ===== 레거시 / 보관 코드 =====
+.legacy/
+
+# ===== AI 도구 스크립트 =====
+.ai_tools/
+
+# ===== GitHub Actions 로컬 실행 아티팩트 =====
+.act/
+
+# ===== 테스트 / 커버리지 =====
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ===== 데이터 폴더 (원본/정제 데이터는 Git에 포함하지 않음) =====
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# ===== OS =====
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# ===== 로그 =====
+*.log
+logs/
+
+# ===== Jupyter =====
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ===== 배포/패키징 =====
+*.whl
+*.tar.gz
+
+# ===== 기획/문서 자료 (Git에 포함하지 않음) =====
+assets/
+
+# ===== 임시 다운파일 =====
+molit_downloads/
+station_downloads/
