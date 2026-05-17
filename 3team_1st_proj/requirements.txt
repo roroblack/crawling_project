@@ -1,12 +1,12 @@
 streamlit
+altair
 pandas
-plotly
+folium
+streamlit-folium
 pymysql
 sqlalchemy
-python-dotenv # dotenv
+python-dotenv
 beautifulsoup4
 lxml
 playwright
-apscheduler
-requests
 openpyxl

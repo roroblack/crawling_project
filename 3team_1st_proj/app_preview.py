@@ -19,6 +19,7 @@
 import io
 import json
 import zipfile
+from pathlib import Path
 
 # 저장 파일명에 현재 시각을 포함하기 위해 사용한다.
 from datetime import datetime
@@ -42,7 +43,8 @@ from streamlit_folium import st_folium
 # DB 쿼리 함수(주석 참고)는 db.py 로 일원화했으므로 포트 임포트는 하지 않는다.
 
 # 데이터 조회 함수 + 지역 표시 순서 상수를 가져온다.
-from db import fetch_registrations, fetch_stations, fetch_faqs, REGION_ORDER
+from db import fetch_registrations, fetch_stations, fetch_faqs, fetch_car_last_crawled, save_car_registrations, init_table, REGION_ORDER
+from crawler_molit import MolitCarCrawler
 
 
 # 시도 표시 고정 순서는 db.REGION_ORDER 사용 (전국 + 17 시도)
@@ -78,6 +80,93 @@ def load_stations() -> pd.DataFrame:
 regs_df_db      = load_registrations()
 stations_df_db  = load_stations()
 
+# ── 연도 표시 유틸리티 ─────────────────────────────────────────
+# 현재 연도(예: 2026)는 연말 데이터가 아닌 특정 월 스냅샷이므로 "26년 4월" 형식으로 표시한다.
+
+CURRENT_YEAR = datetime.now().year
+
+
+@st.cache_data(ttl=3600)
+def _load_last_crawled():
+    """crawl_stat 의 car_registration last_crawled_at 반환. 기록 없으면 None."""
+    try:
+        return fetch_car_last_crawled()
+    except Exception:
+        return None
+
+
+_last_crawled = _load_last_crawled()
+
+
+def year_label(y: int) -> str:
+    """연도 → UI 표시 문자열. 현재 연도면 '26년 N월' 형식, 그 외에는 연도 그대로."""
+    if y == CURRENT_YEAR:
+        return f"{str(y)[2:]}년 {datetime.now().month}월"
+    return str(y)
+
+
+# ── DB 스키마 최신화 + 자동 크롤링 ────────────────────────────
+
+if "db_init_done" not in st.session_state:
+    st.session_state["db_init_done"] = True
+    try:
+        init_table()
+    except Exception:
+        pass
+
+# 현재 연도 데이터가 DB에 없으면 앱 시작 시 자동으로 갱신한다 (세션당 1회).
+# 우선순위: ① data_backup/ 폴더의 최신 ZIP → ② 국토교통부 웹 크롤링
+_db_year_max = int(regs_df_db["stat_year"].max()) if not regs_df_db.empty else 0
+_BACKUP_DIR  = Path(__file__).parent / "data_backup"
+
+
+def _find_backup_zip() -> "Path | None":
+    """data_backup/ 폴더에서 현재 연도 데이터가 담긴 최신 ZIP을 반환한다."""
+    if not _BACKUP_DIR.exists():
+        return None
+    zips = sorted(_BACKUP_DIR.glob("*.zip"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for zp in zips:
+        try:
+            with zipfile.ZipFile(zp) as _zf:
+                if "car_registrations.csv" not in _zf.namelist():
+                    continue
+                _bdf = pd.read_csv(_zf.open("car_registrations.csv"))
+                if "stat_year" in _bdf.columns and int(_bdf["stat_year"].max()) >= CURRENT_YEAR:
+                    return zp
+        except Exception:
+            continue
+    return None
+
+
+if _db_year_max < CURRENT_YEAR and (_last_crawled is None or _last_crawled.date() < datetime.now().date()) and "auto_crawl_done" not in st.session_state:
+    st.session_state["auto_crawl_done"] = True
+    _backup_zip = _find_backup_zip()
+    if _backup_zip is not None:
+        # ① 로컬 백업 ZIP 로드 — 웹 크롤링 스킵
+        try:
+            with zipfile.ZipFile(_backup_zip) as _zf:
+                _bdf = pd.read_csv(_zf.open("car_registrations.csv"))
+            st.session_state["regs_df_override"] = _bdf
+            for _k in ("year_range", "selected_region"):
+                st.session_state.pop(_k, None)
+            st.rerun()
+        except Exception as _be:
+            st.warning(f"백업 ZIP 로드 실패, 크롤링으로 전환합니다: {_be}")
+            _backup_zip = None
+    if _backup_zip is None:
+        # ② 국토교통부 웹 크롤링
+        with st.spinner(f"📡 {CURRENT_YEAR}년 최신 수소차 등록 데이터를 수집하고 있습니다..."):
+            try:
+                _ac = MolitCarCrawler()
+                _ai = _ac.crawl()
+                if _ai:
+                    save_car_registrations(_ai)
+                    load_registrations.clear()
+                    _load_last_crawled.clear()
+                    st.rerun()
+            except Exception as _ae:
+                st.warning(f"자동 크롤링 실패 (기존 데이터로 표시): {_ae}")
+
 # 사이드바에서 ZIP을 업로드한 경우 세션 state의 override 데이터를 우선 사용한다.
 # 업로드한 데이터가 없으면 DB에서 로드한 원본 데이터를 그대로 사용한다.
 regs_df         = st.session_state.get("regs_df_override",     regs_df_db)
@@ -111,38 +200,67 @@ def load_faqs() -> list[tuple[str, str]]:
 
 
 # ──────────────────────────────────────────────────────────────
-# 사이드바 — 필터
+# 사이드바 — 네비게이션 메뉴
 # ──────────────────────────────────────────────────────────────
-st.sidebar.title("🔍 필터")
+_PAGES = ["🏠 홈", "📈 수소차 등록현황", "🗺️ 수소차 충전소", "💬 FAQ"]
+_page  = st.sidebar.radio("메뉴", _PAGES, key="nav_page", label_visibility="collapsed")
+
+# ── 슬라이더 파란색 CSS (전역 주입) ───────────────────────────
+st.markdown("""
+<style>
+div[data-testid="stSlider"] [role="slider"]      { background: #2563eb !important; }
+div[data-testid="stSlider"] [class*="TrackFill"] { background: #2563eb !important; }
+</style>
+""", unsafe_allow_html=True)
+
+st.sidebar.markdown("---")
 
 # DB에서 로드된 연도 범위를 슬라이더 기본값으로 사용한다.
 year_min        = int(regs_df["stat_year"].min())
 year_max        = int(regs_df["stat_year"].max())
+# DB에 이미 현재 연도 데이터가 있거나 오늘 이미 크롤링 완료된 경우에만
+# 슬라이더를 현재 연도까지 확장한다.
+slider_year_max = (
+    max(year_max, CURRENT_YEAR)
+    if (_last_crawled is not None or year_max >= CURRENT_YEAR)
+    else year_max
+)
 # DB에 실제로 데이터가 있는 시도만 selectbox에 표시한다.
 available       = set(regs_df["region_name"].unique().tolist())
 # REGION_ORDER 기준으로 정렬한 선택 가능한 지역 목록이다 (전국 + 데이터 있는 시도).
 region_options  = [r for r in REGION_ORDER if r == "전국" or r in available]
-
-default_years   = (year_min, year_max)
 default_region  = "전국"
 
-# 1) 등록 기간 선택
-year_range      = st.sidebar.slider(
-    "등록 기간 선택",
-    min_value=year_min,
-    max_value=year_max,
-    value=default_years,
-    step=1,
-    key="year_range",
-)
+# 등록현황·충전소 페이지에서만 필터를 표시한다.
+if _page in ("📈 수소차 등록현황", "🗺️ 수소차 충전소"):
+    st.sidebar.markdown("**🔍 필터**")
 
-# 2) 지역 선택 (전국 + 17개 시도, 고정 순서)
-selected_region = st.sidebar.selectbox(
-    "지역 선택",
-    region_options,
-    index=region_options.index(default_region),
-    key="selected_region",
-)
+    if _page == "📈 수소차 등록현황":
+        # 1) 등록 기간 선택 (기본: 전체 기간, 26년 N월 포함)
+        year_range = st.sidebar.slider(
+            "등록 기간 선택",
+            min_value=year_min,
+            max_value=slider_year_max,
+            value=(year_min, slider_year_max),
+            step=1,
+            key="year_range",
+        )
+        st.sidebar.caption(
+            f"기간: **{year_label(year_range[0])} ~ {year_label(year_range[1])}**"
+        )
+    else:
+        year_range = (year_min, slider_year_max)
+
+    # 2) 지역 선택 (전국 + 17개 시도, 고정 순서)
+    selected_region = st.sidebar.selectbox(
+        "지역 선택",
+        region_options,
+        index=region_options.index(default_region),
+        key="selected_region",
+    )
+else:
+    year_range      = (year_min, slider_year_max)
+    selected_region = default_region
 
 st.sidebar.markdown("---")
 
@@ -286,11 +404,111 @@ ratio = (selected_count / nation_total * 100) if nation_total else 0
 
 
 # ──────────────────────────────────────────────────────────────
+# 페이지 라우팅 — 홈 / 충전소 / FAQ (이 블록 이후는 등록현황 전용)
+# ──────────────────────────────────────────────────────────────
+if _page == "🏠 홈":
+    st.title("💧 물로간다")
+    st.markdown("#### 🌱 수소 모빌리티의 현재를 한눈에 확인하세요")
+    st.write(
+        "전국 수소차 등록 현황과 충전소 위치 정보를 제공합니다. "
+        "아래 카드 또는 좌측 메뉴에서 원하는 페이지를 선택하세요."
+    )
+    st.markdown("---")
+
+    _hc1, _hc2, _hc3 = st.columns(3)
+    def _nav_to(page: str):
+        st.session_state["nav_page"] = page
+
+    with _hc1:
+        st.markdown("""<div style='padding:20px;border-radius:12px;background:#eff6ff;
+border:1px solid #bfdbfe;min-height:130px'>
+<h4 style='color:#1d4ed8;margin-top:0'>📈 수소차 등록현황</h4>
+<p style='color:#374151;margin:0'>연도별·지역별 수소차 등록 추이를 다양한 차트로 확인하세요.</p>
+</div>""", unsafe_allow_html=True)
+        st.button("바로가기 →", key="h_reg", use_container_width=True,
+                  on_click=_nav_to, args=("📈 수소차 등록현황",))
+    with _hc2:
+        st.markdown("""<div style='padding:20px;border-radius:12px;background:#f0fdf4;
+border:1px solid #bbf7d0;min-height:130px'>
+<h4 style='color:#15803d;margin-top:0'>🗺️ 수소차 충전소</h4>
+<p style='color:#374151;margin:0'>전국 수소충전소 위치와 상세 정보를 지도로 확인하세요.</p>
+</div>""", unsafe_allow_html=True)
+        st.button("바로가기 →", key="h_map", use_container_width=True,
+                  on_click=_nav_to, args=("🗺️ 수소차 충전소",))
+    with _hc3:
+        st.markdown("""<div style='padding:20px;border-radius:12px;background:#fdf4ff;
+border:1px solid #e9d5ff;min-height:130px'>
+<h4 style='color:#7e22ce;margin-top:0'>💬 FAQ</h4>
+<p style='color:#374151;margin:0'>수소차에 관한 자주 묻는 질문과 답변을 확인하세요.</p>
+</div>""", unsafe_allow_html=True)
+        st.button("바로가기 →", key="h_faq", use_container_width=True,
+                  on_click=_nav_to, args=("💬 FAQ",))
+
+    st.markdown("---")
+    _sm1, _sm2, _sm3 = st.columns(3)
+    _sm1.metric("전국 수소차 누적 등록", f"{int(regs_df_db['count'].sum()):,} 대")
+    _sm2.metric("전국 수소충전소", f"{len(stations_df_db):,} 곳")
+    _sm3.metric("최신 데이터 기준", year_label(slider_year_max))
+    st.stop()
+
+elif _page == "🗺️ 수소차 충전소":
+    st.title("🗺️ 수소차 충전소")
+    st.caption(f"선택 지역: **{selected_region}**")
+    _map_st = (
+        stations_df if selected_region == "전국"
+        else stations_df[stations_df["region_name"] == selected_region]
+    )
+    st.caption(f"표시된 충전소: **{len(_map_st):,}** 곳")
+    if _map_st.empty:
+        st.info("해당 지역의 충전소 데이터가 없습니다.")
+    else:
+        _m = folium.Map(
+            location=[_map_st["lat"].mean(), _map_st["lon"].mean()],
+            zoom_start=7 if selected_region == "전국" else 10,
+        )
+        for _, _r in _map_st.iterrows():
+            folium.Marker(
+                location=[_r["lat"], _r["lon"]],
+                popup=folium.Popup(
+                    f"<b>{_r['station_name']}</b><br>{_r['address'] or ''}",
+                    max_width=260,
+                ),
+                tooltip=_r["station_name"],
+                icon=folium.Icon(color="blue", icon="tint", prefix="fa"),
+            ).add_to(_m)
+        st_folium(_m, height=540, use_container_width=True, returned_objects=[])
+    st.stop()
+
+elif _page == "💬 FAQ":
+    st.title("💬 자주 묻는 질문 (FAQ)")
+    _faqs    = st.session_state.get("faqs_override") or load_faqs()
+    _fsearch = st.text_input(
+        "검색어",
+        placeholder="예: 충전 시간, 보조금, 안전성 ...",
+        label_visibility="collapsed",
+    )
+    _flist = [
+        (q, a) for q, a in _faqs
+        if not _fsearch
+        or _fsearch.lower() in q.lower()
+        or _fsearch.lower() in (a or "").lower()
+    ]
+    if not _flist:
+        st.info("검색 결과가 없습니다.")
+    else:
+        for q, a in _flist:
+            with st.expander(f"Q. {q}"):
+                st.write(a)
+    st.caption(f"총 {len(_faqs)}개 항목  ·  출처: faq 테이블")
+    st.stop()
+
+# ── 이하: 📈 수소차 등록현황 페이지 ───────────────────────────
+# ──────────────────────────────────────────────────────────────
 # 메인 헤더
 # ──────────────────────────────────────────────────────────────
-st.title("💧 수소차 등록 현황 대시보드")
+st.title("📈 수소차 등록 현황 대시보드")
 st.caption(
-    f"선택 지역: **{selected_region}**  ·  기간: **{start_year} ~ {end_year}**"
+    f"선택 지역: **{selected_region}**  ·  기간: **{year_label(start_year)} ~ {year_label(end_year)}**"
 )
 
 
@@ -306,127 +524,276 @@ st.divider()
 
 
 # ──────────────────────────────────────────────────────────────
-# 1. 연도별 등록 현황 선형 그래프
+# 1. 연도별 등록 현황 선형 그래프 (3선: 누적/신규/증가율)
 # ──────────────────────────────────────────────────────────────
 st.subheader(f"📈 {selected_region} 연도별 수소차 등록 현황")
 
 if yearly.empty:
     st.info("선택한 조건에 해당하는 데이터가 없습니다.")
 else:
-    line_df         = yearly.set_index      ("stat_year")
-    line_df.index   = line_df.index.astype  (str)   # x축을 정수가 아닌 문자열 연도로
-    line_df.columns = ["등록 대수"]
-    st.line_chart(line_df, height=320)
+    # 파생 지표 계산을 위해 start_year-1 한 해 앞 데이터도 포함 (end_year까지만)
+    _ext_base = regs_df[
+        (regs_df["stat_year"] >= start_year - 1) &
+        (regs_df["stat_year"] <= end_year)
+    ].copy()
+    if selected_region == "전국":
+        _yearly_ext = _ext_base.groupby("stat_year", as_index=False)["count"].sum()
+    else:
+        _yearly_ext = (
+            _ext_base[_ext_base["region_name"] == selected_region]
+            .groupby("stat_year", as_index=False)["count"].sum()
+        )
+    _yearly_ext = _yearly_ext.sort_values("stat_year").copy()
+    _yearly_ext["신규등록"] = _yearly_ext["count"].diff()
+    _yearly_ext["증가율"]   = _yearly_ext["count"].pct_change().mul(100).round(1)
+
+    # start_year 이전 보조 행 제거 (파생 계산에만 사용)
+    line_data = _yearly_ext[_yearly_ext["stat_year"] >= start_year].copy()
+    line_data["year_str"] = line_data["stat_year"].apply(year_label)
+    # end_year까지 x축 레이블 표시 (데이터 없는 연도도 포함)
+    _data_max_year = int(line_data["stat_year"].max()) if not line_data.empty else start_year - 1
+    if end_year > _data_max_year:
+        _extra = pd.DataFrame([{
+            "stat_year": y, "count": float("nan"),
+            "신규등록": float("nan"), "증가율": float("nan"),
+            "year_str": year_label(y)
+        } for y in range(_data_max_year + 1, end_year + 1)])
+        line_data = pd.concat([line_data, _extra], ignore_index=True)
+    x_sort = line_data["year_str"].tolist()
+
+    # 체크박스: 표시할 선 선택
+    _cb1, _cb2, _cb3 = st.columns(3)
+    _show_cum  = _cb1.checkbox("📈 누적 등록 대수",      value=True,  key="line_cb_cum")
+    _show_new  = _cb2.checkbox("🆕 신규 등록 대수",      value=True,  key="line_cb_new")
+    _show_rate = _cb3.checkbox("📊 전년 대비 증가율 (%)", value=False, key="line_cb_rate")
+
+    _C_CUM  = "#2563eb"   # 파란색 — 누적
+    _C_NEW  = "#16a34a"   # 초록색 — 신규
+    _C_RATE = "#dc2626"   # 빨간색 — 증가율
+    _PT     = 70          # 꼭지점 마커 크기
+    _LW     = 2.5
+
+    # ── 좌측 y축 레이어 (누적 + 신규, 단위: 등록 대수) ──────────
+    _left_rows: list[dict] = []
+    _color_domain, _color_range, _dash_domain, _dash_range = [], [], [], []
+
+    if _show_cum:
+        for _, r in line_data.dropna(subset=["count"]).iterrows():
+            _left_rows.append({"year_str": r["year_str"], "val": r["count"],    "항목": "누적 등록 대수"})
+        _color_domain.append("누적 등록 대수"); _color_range.append(_C_CUM)
+        _dash_domain.append("누적 등록 대수");  _dash_range.append([0, 0])
+    if _show_new:
+        for _, r in line_data.dropna(subset=["신규등록"]).iterrows():
+            _left_rows.append({"year_str": r["year_str"], "val": r["신규등록"], "항목": "신규 등록 대수"})
+        _color_domain.append("신규 등록 대수"); _color_range.append(_C_NEW)
+        _dash_domain.append("신규 등록 대수");  _dash_range.append([6, 3])
+
+    _x_enc = alt.X("year_str:N", sort=x_sort, title=None, axis=alt.Axis(labelAngle=0))
+
+    # 좌측 y축 스케일 기준 (누적 등록 최댓값) — 데이터 없을 때도 스케일 고정에 사용
+    _left_max = int(_yearly_ext["count"].dropna().max()) if not _yearly_ext["count"].dropna().empty else 1
+
+    if _left_rows:
+        _ldf = pd.DataFrame(_left_rows)
+        _cs  = alt.Scale(domain=_color_domain, range=_color_range)
+        _ds  = alt.Scale(domain=_dash_domain,  range=_dash_range)
+        _color_enc = alt.Color("항목:N", scale=_cs, legend=None)
+        _dash_enc  = alt.StrokeDash("항목:N", scale=_ds, legend=None)
+        _left_line  = alt.Chart(_ldf).mark_line(strokeWidth=_LW).encode(
+            x=_x_enc, y=alt.Y("val:Q", title="등록 대수"),
+            color=_color_enc, strokeDash=_dash_enc,
+            tooltip=[alt.Tooltip("year_str:N", title="연도"),
+                     alt.Tooltip("val:Q", title="등록 대수", format=","),
+                     alt.Tooltip("항목:N", title="항목")],
+        )
+        _left_pts = alt.Chart(_ldf).mark_point(size=_PT, filled=True).encode(
+            x=_x_enc, y=alt.Y("val:Q", axis=None), color=_color_enc,
+        )
+    else:
+        # 등록 대수 항목 미선택 시에도 좌측 y축 고정 표시 (투명 더미 레이어)
+        _dummy_ldf = pd.DataFrame([{"year_str": s, "val": 0.0} for s in x_sort])
+        _left_line = alt.Chart(_dummy_ldf).mark_line(opacity=0).encode(
+            x=_x_enc,
+            y=alt.Y("val:Q", title="등록 대수",
+                    scale=alt.Scale(domain=[0, _left_max * 1.1])),
+        )
+        _left_pts = None
+
+    # ── 우측 y축 레이어 (전년 대비 증가율 %, 이중 축) ────────────
+    if _show_rate:
+        _rdf = line_data.dropna(subset=["증가율"])
+        _rate_line = alt.Chart(_rdf).mark_line(
+            color=_C_RATE, strokeWidth=_LW, strokeDash=[4, 2]
+        ).encode(
+            x=_x_enc,
+            y=alt.Y("증가율:Q", title="전년 대비 증가율 (%)",
+                    axis=alt.Axis(orient="right", labelExpr="datum.value + '%'")),
+            tooltip=[alt.Tooltip("year_str:N", title="연도"),
+                     alt.Tooltip("증가율:Q", title="증가율 (%)", format=".1f")],
+        )
+        _rate_pts = alt.Chart(_rdf).mark_point(
+            color=_C_RATE, size=_PT, filled=True
+        ).encode(
+            x=_x_enc,
+            y=alt.Y("증가율:Q", axis=None),
+        )
+        _right_chart = _rate_line + _rate_pts
+    else:
+        _right_chart = None
+
+    # ── 최종 합성 — 좌측 y축(등록 대수)은 항상 포함 ─────────────
+    if not _show_cum and not _show_new and not _show_rate:
+        st.info("최소 하나의 항목을 선택하세요.")
+    else:
+        _all_layers = [_left_line]
+        if _left_pts is not None:
+            _all_layers.append(_left_pts)
+        if _show_rate:
+            _all_layers.extend([_rate_line, _rate_pts])
+        _final = alt.layer(*_all_layers).resolve_scale(y="independent")
+
+        st.altair_chart(_final.properties(height=380), use_container_width=True)
+
+        # 범례 (Altair color legend 대신 HTML 인라인으로 표시)
+        _leg = []
+        if _show_cum:  _leg.append(f"<span style='color:{_C_CUM}'>━</span> 누적 등록 대수")
+        if _show_new:  _leg.append(f"<span style='color:{_C_NEW}'>╌</span> 신규 등록 대수")
+        if _show_rate: _leg.append(f"<span style='color:{_C_RATE}'>╌</span> 전년 대비 증가율 (%, 우측 축)")
+        st.caption("  ·  ".join(_leg), unsafe_allow_html=True)
 
 st.divider()
 
 
 # ──────────────────────────────────────────────────────────────
-# 2. 지역별 등록 순위 바 그래프 (전국 포함)
+# 2. 지역별 등록 현황 (바 차트 / 파이 차트 선택)
 # ──────────────────────────────────────────────────────────────
-st.subheader(f"🏆 지역별 등록 현황 ({start_year}~{end_year} 합계)")
-st.caption  ("표시 순서: 전국 → 서울 → 경기 → 광역시 → 도. 선택한 지역은 강조 표시됩니다.")
+st.subheader(f"📊 지역별 등록 현황 ({year_label(start_year)}~{year_label(end_year)} 합계)")
 
-bar_df          = rank_df_with_nation.copy()
-bar_df["강조"]  = bar_df["region_name"].apply(
-    lambda x: "선택" if x == selected_region else "기타"
-)
-
-bar_chart = (
-    alt.Chart(bar_df)
-    .mark_bar(cornerRadiusEnd=4)
-    .encode(
-        x=alt.X(
-            "region_name:N",
-            sort=REGION_ORDER,
-            title=None,
-            axis=alt.Axis(labelAngle=0),
-        ),
-        y=alt.Y("count:Q", title="등록 대수"),
-        color=alt.Color(
-            "강조:N",
-            scale=alt.Scale(
-                domain=["선택", "기타"],
-                range=["#ef4444", "#9ca3af"],   # 선택 = 빨강, 기타 = 회색
-            ),
-            legend=None,
-        ),
-        tooltip=[
-            alt.Tooltip("region_name:N", title="지역"),
-            alt.Tooltip("count:Q", title="등록 대수", format=","),
-        ],
-    )
-    .properties(height=420)
-)
-st.altair_chart(bar_chart, use_container_width=True)
-
-st.divider()
-
-
-# ──────────────────────────────────────────────────────────────
-# 3. 수소차 충전소 지도
-# ──────────────────────────────────────────────────────────────
-st.subheader(f"🗺️ {selected_region} 수소충전소 지도")
-
-if selected_region == "전국":
-    map_stations = stations_df
-else:
-    map_stations = stations_df[stations_df["region_name"] == selected_region]
-
-st.caption(f"표시된 충전소: **{len(map_stations):,}** 곳")
-
-if map_stations.empty:
-    st.info("해당 지역의 충전소 데이터가 없습니다.")
-else:
-    center_lat  = map_stations["lat"].mean()
-    center_lon  = map_stations["lon"].mean()
-    zoom        = 7 if selected_region == "전국" else 10
-
-    m = folium.Map(location=[center_lat, center_lon], zoom_start=zoom)
-    for _, row in map_stations.iterrows():
-        folium.Marker(
-            location=[row["lat"], row["lon"]],
-            popup=folium.Popup(
-                f"<b>{row['station_name']}</b><br>{row['address'] or ''}",
-                max_width=260,
-            ),
-            tooltip=row["station_name"],
-            icon=folium.Icon(color="blue", icon="tint", prefix="fa"),
-        ).add_to(m)
-
-    st_folium(m, height=480, use_container_width=True, returned_objects=[])
-
-
-st.divider()
-
-
-# ──────────────────────────────────────────────────────────────
-# 4. FAQ
-# ──────────────────────────────────────────────────────────────
-st.subheader("💬 자주 묻는 질문 (FAQ)")
-
-faqs        = st.session_state.get("faqs_override") or load_faqs()
-faq_search  = st.text_input(
-    "검색어",
-    placeholder="예: 충전 시간, 보조금, 안전성 ...",
+chart_type = st.radio(
+    "차트 유형",
+    ["바 차트", "원형 차트"],
+    horizontal=True,
     label_visibility="collapsed",
 )
 
-filtered_faqs = [
-    (q, a) for q, a in faqs
-    if not faq_search
-    or faq_search.lower() in q.lower()
-    or faq_search.lower() in (a or "").lower()
-]
-
-if not filtered_faqs:
-    st.info("검색 결과가 없습니다.")
-else:
-    for q, a in filtered_faqs:
-        with st.expander(f"Q. {q}"):
-            st.write(a)
-
-st.caption(
-    f"총 {len(faqs)}개 항목  ·  "
-    f"출처: faq 테이블 (현재 더미 데이터 표시 중 — 크롤러 적재 후 자동 교체)"
+# 전국 행 제외 — 전국 선택 시 모든 지역 강조, 특정 지역 선택 시 해당 지역만 강조
+chart_df = rank_df.copy()
+chart_df["percent"] = (chart_df["count"] / nation_total * 100).round(2) if nation_total else 0.0
+chart_df["강조"] = chart_df["region_name"].apply(
+    lambda x: "선택" if (selected_region == "전국" or x == selected_region) else "기타"
 )
+
+_COLOR_SEL   = "#5244ef"
+_COLOR_OTHER = "#808895"
+_SEL_PRED    = alt.FieldEqualPredicate(field="강조", equal="선택")
+
+if chart_type == "바 차트":
+    st.caption("전국 선택 시 모든 지역이 강조됩니다.")
+
+    _bar_x = alt.X(
+        "region_name:N",
+        sort=[r for r in REGION_ORDER if r != "전국"],
+        title=None,
+        axis=alt.Axis(labelAngle=0),
+    )
+    _bar_base = alt.Chart(chart_df)
+
+    bars = (
+        _bar_base
+        .mark_bar(cornerRadiusEnd=4)
+        .encode(
+            x=_bar_x,
+            y=alt.Y("count:Q", title="등록 대수"),
+            color=alt.condition(
+                _SEL_PRED,
+                alt.value(_COLOR_SEL),
+                alt.value(_COLOR_OTHER),
+            ),
+            tooltip=[
+                alt.Tooltip("region_name:N", title="지역"),
+                alt.Tooltip("count:Q",       title="등록 대수", format=","),
+                alt.Tooltip("percent:Q",     title="비중 (%)",  format=".1f"),
+            ],
+        )
+    )
+
+    bar_pct_labels = (
+        _bar_base
+        .mark_text(dy=-6, size=11, color="#374151")
+        .encode(
+            x=_bar_x,
+            y=alt.Y("count:Q"),
+            text=alt.Text("percent:Q", format=".1f"),
+        )
+    )
+
+    st.altair_chart(
+        (bars + bar_pct_labels).properties(height=420),
+        use_container_width=True,
+    )
+
+else:  # 원형 차트
+    st.caption("전국 선택 시 모든 지역이 강조됩니다. 마우스 오버 시 지역·등록 대수·비중이 표시됩니다.")
+
+    # 2% 미만 슬라이스는 레이블 생략 (겹침 방지)
+    chart_df["label_text"] = chart_df.apply(
+        lambda row: row["region_name"] if row["percent"] >= 2 else "", axis=1
+    )
+
+    # base를 공유하면 theta 스택이 한 번만 계산되어 arc·label 위치가 정확히 일치한다.
+    base = (
+        alt.Chart(chart_df)
+        .encode(
+            theta=alt.Theta("count:Q", stack=True),
+            order=alt.Order("count:Q", sort="descending"),
+        )
+    )
+
+    arc = base.mark_arc(outerRadius=130, innerRadius=50).encode(
+        color=alt.condition(_SEL_PRED, alt.value(_COLOR_SEL), alt.value(_COLOR_OTHER)),
+        opacity=alt.condition(_SEL_PRED, alt.value(1.0), alt.value(0.7)),
+        tooltip=[
+            alt.Tooltip("region_name:N", title="지역"),
+            alt.Tooltip("count:Q",       title="등록 대수", format=","),
+            alt.Tooltip("percent:Q",     title="비중 (%)",  format=".1f"),
+        ],
+    )
+
+    label = base.mark_text(radius=155, size=10, color="#374151").encode(
+        text=alt.Text("label_text:N"),
+    )
+
+    # 도넛 중앙에 강조 지역의 등록 대수 · 비중 표시
+    if selected_region == "전국":
+        _cx_count = nation_total
+        _cx_pct   = 100.0
+    else:
+        _cx_row   = chart_df[chart_df["region_name"] == selected_region]
+        _cx_count = int(_cx_row["count"].iloc[0])   if not _cx_row.empty else 0
+        _cx_pct   = float(_cx_row["percent"].iloc[0]) if not _cx_row.empty else 0.0
+
+    _cdf_name  = pd.DataFrame([{"v": 1, "txt": selected_region}])
+    _cdf_count = pd.DataFrame([{"v": 1, "txt": f"{_cx_count:,}"}])
+    _cdf_pct   = pd.DataFrame([{"v": 1, "txt": f"{_cx_pct:.1f}%"}])
+
+    # radius=0 → 파이 중심점, dy로 위아래 줄 간격 조절
+    _center_name = (
+        alt.Chart(_cdf_name)
+        .mark_text(radius=0, dy=-22, size=13, fontWeight="bold", color="#374151")
+        .encode(theta=alt.Theta("v:Q"), text="txt:N")
+    )
+    _center_count = (
+        alt.Chart(_cdf_count)
+        .mark_text(radius=0, dy=0, size=15, fontWeight="bold", color="#374151")
+        .encode(theta=alt.Theta("v:Q"), text="txt:N")
+    )
+    _center_pct = (
+        alt.Chart(_cdf_pct)
+        .mark_text(radius=0, dy=20, size=13, color="#6b7280")
+        .encode(theta=alt.Theta("v:Q"), text="txt:N")
+    )
+
+    st.altair_chart(
+        (arc + label + _center_name + _center_count + _center_pct).properties(height=380),
+        use_container_width=True,
+    )

@@ -1,6 +1,7 @@
 # 운영체제 환경변수 값을 읽기 위해 os 모듈을 가져온다.
 # 예: DB_HOST, DB_USER, DB_PASSWORD 같은 값을 읽을 때 사용한다.
 import os
+from datetime import datetime
 
 # .env 파일에 작성된 설정값을 파이썬 환경변수로 불러오기 위해 사용한다.
 # .env 파일에는 DB 접속 정보처럼 코드에 직접 쓰기 부담스러운 값을 저장한다.
@@ -157,6 +158,8 @@ def init_table():
             )
 
 
+
+
 # ── 데이터 조회 함수 ────────────────────────────────────────────
 # app_preview.py 등 UI 레이어에서 SQL 없이 데이터를 가져올 수 있도록 제공한다.
 # SQL 쿼리는 모두 이 파일(db.py)에서만 작성한다.
@@ -202,3 +205,48 @@ def fetch_faqs() -> list[tuple[str, str]]:
             text("SELECT question, answer FROM faq ORDER BY faq_id")
         ).fetchall()
     return [(r[0], r[1] or "") for r in rows]
+
+
+def fetch_car_last_crawled() -> datetime | None:
+    """crawl_stat의 car_registration 행에서 last_crawled_at(마지막 수집 시각)을 반환한다.
+    기록이 없으면 None 반환."""
+    engine = get_engine()
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT last_crawled_at FROM crawl_stat WHERE target_type = 'car_registration'")
+        ).fetchone()
+    if row and row[0]:
+        return row[0] if isinstance(row[0], datetime) else datetime.fromisoformat(str(row[0]))
+    return None
+
+
+def save_car_registrations(items) -> int:
+    """CarRegistrationItem 목록을 car_registrations에 UPSERT 저장하고
+    crawl_stat의 last_crawled_at을 현재 시각으로 갱신한다.
+    저장된 레코드 수를 반환."""
+    engine = get_engine()
+    with engine.begin() as conn:
+        # 지역명 → region_id 매핑
+        rows   = conn.execute(text("SELECT region_id, region_name FROM regions")).fetchall()
+        rid_map = {r[1]: r[0] for r in rows}
+
+        saved = 0
+        for item in items:
+            rid = rid_map.get(item.region)
+            if rid is None:
+                continue
+            conn.execute(text("""
+                INSERT INTO car_registrations (region_id, stat_year, count)
+                VALUES (:rid, :year, :cnt)
+                ON DUPLICATE KEY UPDATE count = VALUES(count)
+            """), {"rid": rid, "year": item.stat_year, "cnt": item.count})
+            saved += 1
+
+        # crawl_stat 갱신: 마지막 수집 시각
+        conn.execute(text("""
+            UPDATE crawl_stat
+            SET last_crawled_at = NOW()
+            WHERE target_type = 'car_registration'
+        """))
+
+    return saved

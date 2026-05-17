@@ -7,6 +7,159 @@
 ## 프로젝트 구조
 
 ```
+├── app_preview.py          # 수소차 등록 현황 + 충전소 통합 대시보드 (메인 앱)
+├── crawler_molit.py        # 국토교통부 수소차 등록 현황 크롤러
+├── crawler_station.py      # 공공데이터 포털 수소충전소 현황 크롤러 + CSV 수동 적재
+├── db.py                   # MySQL 연결·테이블 초기화·데이터 조회/저장 모듈
+├── models.py               # 데이터 클래스 정의
+├── dbscript.sql            # DB 스키마 생성 SQL
+├── requirements.txt        # Python 패키지 의존성
+├── molit_downloads/        # 수소차 등록 현황 엑셀 임시 저장 폴더
+├── station_downloads/      # 충전소 CSV 자동 저장 폴더
+├── data_backup/            # 수동 백업 ZIP 보관 폴더 (앱 시작 시 크롤링 대체)
+└── .legacy/                # 이전 버전 파일 보관
+```
+
+---
+
+## 파일별 설명
+
+### `app_preview.py`
+수소차 등록 현황과 충전소 정보를 통합한 Streamlit 대시보드입니다.
+
+- 앱 시작 시 `crawl_stat.last_crawled_at` 확인 → 오늘 크롤링 완료면 스킵, 아니면 자동 수집
+- `data_backup/*.zip`에 현재 연도 데이터가 있으면 크롤링 없이 백업에서 로드
+- 연도별 등록 현황 선형 그래프 (누적·신규·전년대비 증가율 이중 y축)
+- 지역별 등록 현황 순위 바/원형 차트
+- 선택 지역 수소충전소 지도 (Folium)
+- FAQ 탭
+
+### `crawler_molit.py`
+[국토교통부 통계누리](https://stat.molit.go.kr/portal/cate/statMetaView.do?hRsId=58)에서 수소차 등록 현황 엑셀을 내려받아 DB에 저장하는 크롤러입니다.
+
+- Playwright로 브라우저를 자동 조작하여 엑셀 다운로드
+- `10.연료별_등록현황` 시트에서 수소/수소전기 행 추출
+- 현재 연도는 최신 월부터 역방향 탐색, 과거 연도는 12월(연말 스냅샷)만 수집
+- 엑셀은 `molit_downloads/` 폴더에 임시 저장
+
+### `crawler_station.py`
+[공공데이터 포털](https://www.data.go.kr/data/15066838/fileData.do)에서 수소충전소 현황 CSV를 자동 다운로드하여 DB에 저장하는 크롤러입니다.
+
+- Playwright로 CSV 파일 자동 다운로드
+- `load_from_file(path)` 함수로 로컬 CSV 수동 적재도 지원
+- 다운로드된 파일은 `station_downloads/` 폴더에 저장
+
+### `db.py`
+MySQL 연결 및 DB 작업 공통 모듈입니다.
+
+- `.env` 파일의 접속 정보로 SQLAlchemy 엔진 생성
+- `init_table()` — 앱 최초 실행 시 테이블 생성 + regions·crawl_stat 기초 데이터 삽입
+- `save_car_registrations(items)` — 수소차 등록 데이터 UPSERT + `crawl_stat.last_crawled_at` 갱신
+- `fetch_registrations()` / `fetch_stations()` / `fetch_faqs()` — 조회 함수
+- `fetch_car_last_crawled()` — 마지막 크롤링 일시 조회
+
+### `models.py`
+크롤러와 DB 사이에서 데이터를 주고받는 데이터 클래스들을 정의합니다.
+
+| 클래스 | 용도 |
+|---|---|
+| `CarRegistrationItem` | 수소차 등록 현황 1건 |
+| `StationItem` | 수소충전소 1건 |
+| `FaqItem` | FAQ 1건 |
+
+### `dbscript.sql`
+MySQL 테이블 생성 SQL입니다. DB 최초 설정 시 한 번 실행합니다.
+
+생성 테이블:
+- `regions` — 시도 지역 (17개 시도)
+- `car_registrations` — 수소차 연도별 등록 현황
+- `hydrogen_charging_station` — 수소충전소 위치 정보
+- `faq` — FAQ
+- `crawl_stat` — 크롤 대상별 마지막 수집 일시
+
+---
+
+## 환경 설정
+
+### 1. 가상환경 생성 및 패키지 설치
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+playwright install chromium
+```
+
+### 2. `.env` 파일 생성
+
+프로젝트 루트에 `.env` 파일을 생성하고 DB 접속 정보를 입력합니다.
+
+```env
+DB_HOST=localhost
+DB_PORT=3306
+DB_USER=your_user
+DB_PASSWORD=your_password
+DB_NAME=crawler_db
+```
+
+### 3. DB 스키마 생성
+
+MySQL 클라이언트에서 `dbscript.sql`을 실행합니다.
+
+```bash
+mysql -u your_user -p < dbscript.sql
+```
+
+---
+
+## 실행 방법
+
+### 대시보드 실행
+
+```bash
+.venv\Scripts\python.exe -m streamlit run app_preview.py
+```
+
+앱 시작 시 현재 연도 데이터가 없으면 자동으로 크롤링합니다.  
+`data_backup/` 폴더에 백업 ZIP이 있으면 크롤링 없이 ZIP에서 로드합니다.
+
+### 수동 크롤링
+
+```bash
+# 수소차 등록 현황
+python crawler_molit.py
+
+# 수소충전소
+python crawler_station.py
+```
+
+### CSV 수동 적재 (충전소)
+
+```bash
+python -c "from crawler_station import load_from_file; load_from_file('파일경로.csv')"
+```
+
+---
+
+## 주요 의존성
+
+| 패키지 | 용도 |
+|---|---|
+| `streamlit` | 웹 대시보드 |
+| `altair` | 선형·바 차트 |
+| `folium` / `streamlit-folium` | 지도 시각화 |
+| `playwright` | 브라우저 자동화 크롤링 |
+| `sqlalchemy` / `pymysql` | MySQL 연동 |
+| `pandas` | 데이터 처리 |
+| `openpyxl` | 엑셀 파일 파싱 |
+| `python-dotenv` | 환경변수 관리 |
+
+
+---
+
+## 프로젝트 구조
+
+```
 ├── app.py                  # 전국 수소충전소 지도 대시보드 (메인 앱)
 ├── app_preview.py          # 수소차 등록 현황 + 충전소 통합 대시보드
 ├── crawler_molit.py        # 국토교통부 수소차 등록 현황 크롤러

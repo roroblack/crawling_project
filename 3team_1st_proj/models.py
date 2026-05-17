@@ -12,14 +12,15 @@ class CrawlItem:
 
 @dataclass
 class CarRegistrationItem:
-    stat_year: int      # 연도
-    stat_month: int     # 월 (0 = 연간합계, 1~12 = 해당 월)
-    fuel_type: str      # 수소 / 수소전기 / 전기 / 휘발유 등  -> fuel_types.fuel_name
-    vehicle_type: str   # 승용 / 승합 / 화물 / 특수 / 소계    -> vehicle_types.vehicle_type_name
-    usage_type: str     # 비사업용 / 사업용 / 계              -> usage_types.usage_type_name
-    region: str         # 서울 / 부산 / ... / 제주 / 전국     -> regions.region_name
-    count: int          # 등록 대수
-    crawled_at: datetime
+    stat_year: int   # 연도
+    region: str      # 서울 / 부산 / ... / 제주 / 전국 → regions.region_name
+    count: int       # 등록 대수 (해당 연도 수소차 전체 누적 합산)
+    # ── 아래 필드는 DB 스키마에 없으므로 주석 처리 ──
+    # stat_month: int     # 월 — DB는 stat_year만 저장하므로 불필요
+    # fuel_type: str      # 수소/수소전기 — 합산 후 저장하므로 불필요
+    # vehicle_type: str   # 차종 — 합산 후 저장하므로 불필요
+    # usage_type: str     # 용도 — 합산 후 저장하므로 불필요
+    # crawled_at: datetime  # 크롤 시각 — crawl_stat.last_crawled_at 으로 일원화
 
 
 @dataclass

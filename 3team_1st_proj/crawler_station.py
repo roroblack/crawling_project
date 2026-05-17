@@ -334,6 +334,17 @@ def run_sync() -> int:
     return StationCrawler().crawl()
 
 
+def load_from_file(path: str) -> int:
+    """로컬 CSV 파일을 읽어 hydrogen_charging_station 테이블에 저장한다.
+    크롤러 없이 직접 내려받은 파일을 적재할 때 사용한다.
+    저장된 레코드 수를 반환한다."""
+    crawler = StationCrawler()
+    with open(path, "rb") as f:
+        csv_bytes = f.read()
+    items = crawler._to_items(crawler._parse(csv_bytes))
+    return crawler._save(items)
+
+
 # 이 파일을 직접 실행하면 크롤링을 즉시 시작한다.
 if __name__ == "__main__":
     count = StationCrawler().crawl()

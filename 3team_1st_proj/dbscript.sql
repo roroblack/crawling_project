@@ -81,9 +81,3 @@ CREATE TABLE IF NOT EXISTS crawl_stat (
 -- TRUNCATE TABLE hydrogen_charging_station;
 -- TRUNCATE TABLE regions;
 -- TRUNCATE TABLE faq;-- TRUNCATE TABLE crawl_stat;
-
--- ─── data_sources 초기 레코드 ──────────────────────────────
-INSERT IGNORE INTO crawl_stat (target_type) VALUES
-    ('car_registration'),
-    ('station'),
-    ('faq');
