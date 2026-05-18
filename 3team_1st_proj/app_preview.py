@@ -43,8 +43,15 @@ from streamlit_folium import st_folium
 # DB 쿼리 함수(주석 참고)는 db.py 로 일원화했으므로 포트 임포트는 하지 않는다.
 
 # 데이터 조회 함수 + 지역 표시 순서 상수를 가져온다.
-from db import fetch_registrations, fetch_stations, fetch_faqs, fetch_car_last_crawled, save_car_registrations, init_table, REGION_ORDER
+from db import (
+    fetch_registrations, fetch_stations, fetch_faqs,
+    fetch_car_last_crawled, fetch_faq_last_crawled,
+    save_car_registrations, save_faqs,
+    init_table, REGION_ORDER,
+)
 from crawler_molit import MolitCarCrawler
+from crawler_faq import crawl_all_faqs
+from models import FaqItem
 
 
 # 시도 표시 고정 순서는 db.REGION_ORDER 사용 (전국 + 17 시도)
@@ -86,6 +93,28 @@ stations_df_db  = load_stations()
 CURRENT_YEAR = datetime.now().year
 
 
+@st.cache_data(ttl=300)
+def load_stat_month() -> int:
+    """현재 연도 통계 월: 데이터 로드 시점에 molit_downloads/ 파일명에서 파싱해 캐싱한다.
+    load_registrations() 와 동일한 TTL 로 묶여 있어 데이터 갱신 시 함께 무효화된다."""
+    import re as _re
+    folder = Path(__file__).parent / "molit_downloads"
+    files = sorted(
+        [f for f in folder.glob(f"{CURRENT_YEAR}년_*.xlsx") if not f.name.startswith("~$")],
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    for f in files:
+        m = _re.search(r"_(\d{1,2})월", f.name)
+        if m:
+            return int(m.group(1))
+    return datetime.now().month
+
+
+# 데이터 로드와 동시에 통계 월을 메모리에 확정한다.
+STAT_MONTH: int = load_stat_month()
+
+
 @st.cache_data(ttl=3600)
 def _load_last_crawled():
     """crawl_stat 의 car_registration last_crawled_at 반환. 기록 없으면 None."""
@@ -95,13 +124,22 @@ def _load_last_crawled():
         return None
 
 
+@st.cache_data(ttl=3600)
+def _load_faq_last_crawled():
+    """crawl_stat 의 faq last_crawled_at 반환. 기록 없으면 None."""
+    try:
+        return fetch_faq_last_crawled()
+    except Exception:
+        return None
+
+
 _last_crawled = _load_last_crawled()
 
 
 def year_label(y: int) -> str:
-    """연도 → UI 표시 문자열. 현재 연도면 '26년 N월' 형식, 그 외에는 연도 그대로."""
+    """연도 → UI 표시 문자열. 현재 연도면 '26년 N월' 형식(N=STAT_MONTH), 그 외에는 연도 그대로."""
     if y == CURRENT_YEAR:
-        return f"{str(y)[2:]}년 {datetime.now().month}월"
+        return f"{str(y)[2:]}년 {STAT_MONTH}월"
     return str(y)
 
 
@@ -138,6 +176,37 @@ def _find_backup_zip() -> "Path | None":
     return None
 
 
+def _find_faq_backup() -> "tuple[Path, pd.DataFrame] | None":
+    """data_backup/ 폴더의 ZIP 중 faq.csv가 있고 내용이 있는 최신 파일과
+    DataFrame을 (path, df) 튜플로 반환한다. 없으면 None."""
+    if not _BACKUP_DIR.exists():
+        return None
+    zips = sorted(_BACKUP_DIR.glob("*.zip"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for _zp in zips:
+        try:
+            with zipfile.ZipFile(_zp) as _zf:
+                if "faq.csv" not in _zf.namelist():
+                    continue
+                _fdf = pd.read_csv(_zf.open("faq.csv"))
+                if not _fdf.empty and "question" in _fdf.columns:
+                    return (_zp, _fdf)
+        except Exception:
+            continue
+    return None
+
+
+def _df_to_faq_items(df: pd.DataFrame) -> list[FaqItem]:
+    """DataFrame(question, answer)을 FaqItem 리스트로 변환한다."""
+    now = datetime.now()
+    result = []
+    for _, row in df.iterrows():
+        q = str(row.get("question", "")).strip()
+        a = str(row.get("answer", "") or "").strip()
+        if q:
+            result.append(FaqItem(source_site="backup", category="", question=q, answer=a, crawled_at=now))
+    return result
+
+
 if _db_year_max < CURRENT_YEAR and (_last_crawled is None or _last_crawled.date() < datetime.now().date()) and "auto_crawl_done" not in st.session_state:
     st.session_state["auto_crawl_done"] = True
     _backup_zip = _find_backup_zip()
@@ -162,6 +231,7 @@ if _db_year_max < CURRENT_YEAR and (_last_crawled is None or _last_crawled.date(
                 if _ai:
                     save_car_registrations(_ai)
                     load_registrations.clear()
+                    load_stat_month.clear()
                     _load_last_crawled.clear()
                     st.rerun()
             except Exception as _ae:
@@ -180,7 +250,7 @@ FAQ_FALLBACK = [
     ("수소차는 어떻게 충전하나요?",
      "수소충전소에서 5분 내외로 완충이 가능합니다. LPG 충전과 유사한 방식으로 노즐을 연결하면 자동으로 충전됩니다."),
     ("수소차 한 번 충전으로 얼마나 갈 수 있나요?",
-     "현대 넷쒑 기준 1회 완충(약 6.33kg) 시 약 609km를 주행할 수 있습니다."),
+     "현대 넥쏘 기준 1회 완충(약 6.33kg) 시 약 609km를 주행할 수 있습니다."),
     ("수소차 구매 보조금은 얼마인가요?",
      "2026년 기준 국비 2,250만원 + 지자체 보조금 1,000만원 내외가 지원되며, 지역에 따라 차이가 있습니다."),
     ("수소충전소는 전국에 몇 곳 있나요?",
@@ -191,7 +261,7 @@ FAQ_FALLBACK = [
 
 
 @st.cache_data(ttl=300)
-def load_faqs() -> list[tuple[str, str]]:
+def load_faqs() -> list[ tuple[str, str]]:
     """드비 faq 테이블 조회; 비어 있으면 FAQ_FALLBACK 반환"""
     rows = fetch_faqs()
     if not rows:
@@ -218,13 +288,8 @@ st.sidebar.markdown("---")
 # DB에서 로드된 연도 범위를 슬라이더 기본값으로 사용한다.
 year_min        = int(regs_df["stat_year"].min())
 year_max        = int(regs_df["stat_year"].max())
-# DB에 이미 현재 연도 데이터가 있거나 오늘 이미 크롤링 완료된 경우에만
-# 슬라이더를 현재 연도까지 확장한다.
-slider_year_max = (
-    max(year_max, CURRENT_YEAR)
-    if (_last_crawled is not None or year_max >= CURRENT_YEAR)
-    else year_max
-)
+# 슬라이더 최댓값 = 실제 데이터 최댓값으로 고정 → 선형 그래프 x축과 항상 동기화된다.
+slider_year_max = year_max
 # DB에 실제로 데이터가 있는 시도만 selectbox에 표시한다.
 available       = set(regs_df["region_name"].unique().tolist())
 # REGION_ORDER 기준으로 정렬한 선택 가능한 지역 목록이다 (전국 + 데이터 있는 시도).
@@ -374,10 +439,12 @@ else:
         .sum()
     )
 
-# 지역별 합계 (선택 기간) + “전국” 합계 행 추가
-# 남저용 바 차트와 비율 메트릭에 공통으로 사용하는 지역별 합계 테이블이다.
+# 지역별 합계 — end_year 기준 누적 등록 대수 (최신 스냅샷)
+# 각 연도의 count는 그 시점까지의 누적값이므로, 연도 합산이 아닌
+# end_year 단일 연도의 데이터를 사용해야 올바른 현황을 표시한다.
 rank_df = (
-    filtered.groupby("region_name", as_index=False)["count"]
+    regs_df[regs_df["stat_year"] == end_year]
+    .groupby("region_name", as_index=False)["count"]
     .sum()
 )
 nation_total        = int(rank_df["count"].sum())
@@ -481,6 +548,46 @@ elif _page == "🗺️ 수소차 충전소":
 
 elif _page == "💬 FAQ":
     st.title("💬 자주 묻는 질문 (FAQ)")
+
+    # ── FAQ 자동 갱신: 이 탭에 들어왜을 때만 실행 (세션당 1회) ─────────────────
+    # 펰보 ① st.cache_data · DB 수집 시각 확인
+    #       ② data_backup/*.zip 에 faq.csv 오프라인 백업 확인
+    #       ③ ev.or.kr + hyundai.com 웹 크롤링
+    _faq_last_crawled = _load_faq_last_crawled()
+    _faq_needs_update = (
+        _faq_last_crawled is None
+        or (datetime.now().date() - _faq_last_crawled.date()).days >= 7
+    )
+    if _faq_needs_update and "auto_faq_crawl_done" not in st.session_state:
+        st.session_state["auto_faq_crawl_done"] = True
+
+        # ① data_backup/ 폴더 오프라인 백업 ZIP 자동 확인 — 대용량 크롤링 생략
+        _faq_backup = _find_faq_backup()
+        if _faq_backup is not None:
+            _faq_zip_path, _faq_df = _faq_backup
+            try:
+                _faq_items_bk = _df_to_faq_items(_faq_df)
+                if _faq_items_bk:
+                    save_faqs(_faq_items_bk)
+                    load_faqs.clear()
+                    _load_faq_last_crawled.clear()
+                    st.info(f"📂 FAQ 데이터를 로컈 백업에서 로드했습니다. ({_faq_zip_path.name})")
+            except Exception as _faq_be:
+                st.warning(f"FAQ 백업 로드 실패, 크롤링으로 전환합니다: {_faq_be}")
+                _faq_backup = None  # 크롤링으로 폴백
+
+        # ② 백업 ZIP 없거나 로드 실패 시 웹 크롤링
+        if _faq_backup is None:
+            with st.spinner("📡 FAQ 데이터를 수집하고 있습니다 (ev.or.kr · hyundai.com)..."):
+                try:
+                    _faq_items = crawl_all_faqs()
+                    if _faq_items:
+                        save_faqs(_faq_items)
+                        load_faqs.clear()
+                        _load_faq_last_crawled.clear()
+                except Exception as _faq_e:
+                    st.warning(f"FAQ 자동 수집 실패 (기존 데이터로 표시): {_faq_e}")
+
     _faqs    = st.session_state.get("faqs_override") or load_faqs()
     _fsearch = st.text_input(
         "검색어",
@@ -516,9 +623,9 @@ st.caption(
 # 상단 메트릭
 # ──────────────────────────────────────────────────────────────
 m1, m2, m3 = st.columns(3)
-m1.metric(f"{selected_region} 등록수 (기간 합계)",  f"{selected_count:,} 대")
-m2.metric("전국 등록수 (기간 합계)",                f"{nation_total:,} 대")
-m3.metric("전국 대비 비중",                         f"{ratio:.2f} %")
+m1.metric(f"{selected_region} 누적 등록수 ({year_label(end_year)} 기준)",  f"{selected_count:,} 대")
+m2.metric(f"전국 누적 등록수 ({year_label(end_year)} 기준)",                f"{nation_total:,} 대")
+m3.metric("전국 대비 비중",                                                f"{ratio:.2f} %")
 
 st.divider()
 
@@ -667,7 +774,7 @@ st.divider()
 # ──────────────────────────────────────────────────────────────
 # 2. 지역별 등록 현황 (바 차트 / 파이 차트 선택)
 # ──────────────────────────────────────────────────────────────
-st.subheader(f"📊 지역별 등록 현황 ({year_label(start_year)}~{year_label(end_year)} 합계)")
+st.subheader(f"📊 지역별 등록 현황 ({year_label(end_year)} 기준 누적)")
 
 chart_type = st.radio(
     "차트 유형",

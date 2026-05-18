@@ -220,6 +220,46 @@ def fetch_car_last_crawled() -> datetime | None:
     return None
 
 
+def fetch_faq_last_crawled() -> datetime | None:
+    """crawl_stat의 faq 행에서 last_crawled_at(마지막 수집 시각)을 반환한다.
+    기록이 없으면 None 반환."""
+    engine = get_engine()
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT last_crawled_at FROM crawl_stat WHERE target_type = 'faq'")
+        ).fetchone()
+    if row and row[0]:
+        return row[0] if isinstance(row[0], datetime) else datetime.fromisoformat(str(row[0]))
+    return None
+
+
+def save_faqs(items) -> int:
+    """FaqItem 목록을 faq 테이블에 저장하고
+    crawl_stat 의 last_crawled_at 을 현재 시각으로 갱신한다.
+
+    기존 faq 데이터를 삭제한 후 items 를 새로 삽입한다.
+    저장된 레코드 수를 반환한다."""
+    engine = get_engine()
+    with engine.begin() as conn:
+        # 기존 FAQ 전체 삭제 (최신 크롤링 결과로 교체)
+        conn.execute(text("DELETE FROM faq"))
+
+        for item in items:
+            conn.execute(text("""
+                INSERT INTO faq (question, answer)
+                VALUES (:q, :a)
+            """), {"q": item.question, "a": item.answer or ""})
+
+        # crawl_stat 갱신: 마지막 수집 시각
+        conn.execute(text("""
+            UPDATE crawl_stat
+            SET last_crawled_at = NOW()
+            WHERE target_type = 'faq'
+        """))
+
+    return len(items)
+
+
 def save_car_registrations(items) -> int:
     """CarRegistrationItem 목록을 car_registrations에 UPSERT 저장하고
     crawl_stat의 last_crawled_at을 현재 시각으로 갱신한다.
