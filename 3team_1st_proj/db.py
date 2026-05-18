@@ -135,7 +135,7 @@ def init_table():
         """,
         # ── 메타 테이블 ──────────────────────────────────────────
         # 크롤 대상별 수집 상태/메타 (크롤러/API/수동업로드 공통)
-        # source_code는 CHECK 제약으로 닫힌 도메인을 강제한다 (ENUM 대신).
+        # crawl_stat 는 CHECK 제약으로 닫힌 도메인을 강제한다 (ENUM 대신).
         """
         CREATE TABLE IF NOT EXISTS crawl_stat (
             crawl_id        INT         AUTO_INCREMENT PRIMARY KEY,

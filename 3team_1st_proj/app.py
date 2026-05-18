@@ -12,7 +12,7 @@
   4. 선택 지역의 수소차 충전소 지도
 
 실행:
-  .venv\\Scripts\\python.exe -m streamlit run app_preview.py
+  .venv\\Scripts\\python.exe -m streamlit run app.py
 """
 
 # 데이터셋 ZIP 직렬화에 사용한다.
