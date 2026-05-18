@@ -6,7 +6,7 @@ import sys, os, glob, re
 sys.path.insert(0, '.')
 
 import openpyxl, io
-from crawler_molit import MolitCarCrawler
+from crawling.crawler_molit import MolitCarCrawler
 
 c = MolitCarCrawler()
 files = sorted(f for f in glob.glob('molit_downloads/*.xlsx') if not os.path.basename(f).startswith('~$'))

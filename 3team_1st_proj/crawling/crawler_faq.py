@@ -17,7 +17,7 @@ from playwright.async_api import async_playwright
 from concurrent.futures import ThreadPoolExecutor
 
 # models.py에 정의된 FaqItem 데이터 클래스를 가져온다.
-from models import FaqItem
+from model.models import FaqItem
 
 
 # .env 파일을 읽어서 os.getenv()로 사용할 수 있게 한다.

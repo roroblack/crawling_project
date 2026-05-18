@@ -1,4 +1,4 @@
-# 수소차 등록 현황 & 수소충전소 대시보드
+# 물로간다
 
 국토교통부 통계누리와 공공데이터 포털에서 수소차 등록 현황 및 수소충전소 데이터를 크롤링하여 MySQL에 저장하고, Streamlit으로 시각화하는 프로젝트입니다.
 
@@ -7,7 +7,7 @@
 ## 프로젝트 구조
 
 ```
-├── app_preview.py          # 수소차 등록 현황 + 충전소 통합 대시보드 (메인 앱)
+├── app.py                  # 수소차 등록 현황 + 충전소 통합 대시보드 (메인 앱)
 ├── crawler_molit.py        # 국토교통부 수소차 등록 현황 크롤러
 ├── crawler_station.py      # 공공데이터 포털 수소충전소 현황 크롤러 + CSV 수동 적재
 ├── db.py                   # MySQL 연결·테이블 초기화·데이터 조회/저장 모듈
@@ -24,7 +24,7 @@
 
 ## 파일별 설명
 
-### `app_preview.py`
+### `app.py`
 수소차 등록 현황과 충전소 정보를 통합한 Streamlit 대시보드입니다.
 
 - 앱 시작 시 `crawl_stat.last_crawled_at` 확인 → 오늘 크롤링 완료면 스킵, 아니면 자동 수집
@@ -117,7 +117,7 @@ mysql -u your_user -p < dbscript.sql
 ### 대시보드 실행
 
 ```bash
-.venv\Scripts\python.exe -m streamlit run app_preview.py
+.venv\Scripts\python.exe -m streamlit run app.py
 ```
 
 앱 시작 시 현재 연도 데이터가 없으면 자동으로 크롤링합니다.  
@@ -160,8 +160,7 @@ python -c "from crawler_station import load_from_file; load_from_file('파일경
 ## 프로젝트 구조
 
 ```
-├── app.py                  # 전국 수소충전소 지도 대시보드 (메인 앱)
-├── app_preview.py          # 수소차 등록 현황 + 충전소 통합 대시보드
+├── app.py                  # 수소차 등록 현황 + 충전소 통합 대시보드 (메인 앱)
 ├── crawler_molit.py        # 국토교통부 수소차 등록 현황 크롤러
 ├── crawler_station.py      # 공공데이터 포털 수소충전소 현황 크롤러
 ├── load_station_csv.py     # 충전소 CSV 파일 → DB 수동 적재 스크립트
@@ -183,7 +182,7 @@ python -c "from crawler_station import load_from_file; load_from_file('파일경
 - Folium `MarkerCluster`로 충전소 위치 클러스터링
 - DB의 `hydrogen_charging_station` 테이블에서 데이터 조회
 
-### `app_preview.py`
+### `app.py`
 수소차 등록 현황과 충전소 정보를 통합한 풍부한 대시보드입니다.
 
 - 연도별 등록 현황 선형 그래프
@@ -298,7 +297,7 @@ python load_station_csv.py
 .venv\Scripts\python.exe -m streamlit run app.py
 
 # 통합 대시보드
-.venv\Scripts\python.exe -m streamlit run app_preview.py
+.venv\Scripts\python.exe -m streamlit run app.py
 ```
 
 ---

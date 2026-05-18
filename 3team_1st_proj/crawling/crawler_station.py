@@ -26,10 +26,10 @@ from playwright.async_api import async_playwright
 from sqlalchemy import text
 
 # DB 연결 엔진 생성 함수를 가져온다.
-from db import get_engine, REGIONS
+from common.db import get_engine, REGIONS
 
 # models.py에 정의된 StationItem 데이터 클래스를 가져온다.
-from models import StationItem
+from model.models import StationItem
 
 # .env 파일을 읽어서 os.getenv()로 사용할 수 있게 한다.
 load_dotenv()
