@@ -16,6 +16,16 @@ from sqlalchemy import create_engine, text
 # 이 코드를 실행해야 os.getenv("DB_HOST")처럼 .env 값을 가져올 수 있다.
 load_dotenv()
 
+# Streamlit Cloud 환경에서는 .env 파일 대신 st.secrets 에서 DB 접속 정보를 읽는다.
+# 로컬 실행 시에는 load_dotenv() 가 먼저 설정하므로 이 블록은 무시된다.
+try:
+    import streamlit as _st
+    for _k in ("DB_HOST", "DB_PORT", "DB_USER", "DB_PASSWORD", "DB_NAME"):
+        if _k in _st.secrets and not os.environ.get(_k):
+            os.environ[_k] = str(_st.secrets[_k])
+except Exception:
+    pass
+
 
 # MySQL 데이터베이스 연결 엔진을 생성하는 함수이다.
 # 다른 파일에서 get_engine()을 호출하면 MySQL에 연결할 수 있는 객체를 받을 수 있다.
