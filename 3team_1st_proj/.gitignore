@@ -25,15 +25,6 @@ scripts/service_account.json
 .vscode/
 *.code-workspace
 
-# ===== Streamlit 설정 =====
-.streamlit/
-
-# ===== 레거시 / 보관 코드 =====
-.legacy/
-
-# ===== AI 도구 스크립트 =====
-.ai_tools/
-
 # ===== GitHub Actions 로컬 실행 아티팩트 =====
 .act/
 
@@ -64,10 +55,3 @@ logs/
 # ===== 배포/패키징 =====
 *.whl
 *.tar.gz
-
-# ===== 기획/문서 자료 (Git에 포함하지 않음) =====
-assets/
-
-# ===== 임시 다운파일 =====
-molit_downloads/
-station_downloads/

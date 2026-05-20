@@ -49,3 +49,5 @@ logs/
 .coverage
 htmlcov/
 
+# ===== 기타 =====
+.backup/

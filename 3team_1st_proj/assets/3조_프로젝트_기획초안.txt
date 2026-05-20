@@ -1,0 +1,27 @@
+팀명 : 카데이터
+팀장 : 최연우
+팀원 : 권소라 김지혜 박회종
+
+프로젝트명 : 물로간다
+
+프로젝트 주제 : 한국 자동차 등록 현황 및 기업 FAQ 조회시스템
+데이터 출처 :
+- DB :
+	자동차 등록 현황 		: 		https://stat.molit.go.kr/		(https://stat.molit.go.kr/portal/cate/statMetaView.do?hRsId=58)
+	수소차 등록 현황 		: 		https://h2hub.or.kr/ 		(https://h2hub.or.kr/main/stat/stat_use_hCar_apply.do)
+- FAQ : 
+	무공해차 통합누리집 FAQ 	: 	https://www.ev.or.kr/ 		(https://ev.or.kr/nportal/partcptn/initFaqAction.do)
+	현대차 수소차 구매 FAQ 	:	https://www.hyundai.com/ 	(https://www.hyundai.com/kr/ko/e/customer/guide/purchase/estimate-fcev)
+
+세부 구현 기능 : 
+- 국토부에서 엑셀파일을 크롤링
+- 연도별, 지역별 날짜에 따른 수소차 등록의 증가량 확인
+- 수소차 등록 관련 데이터를 웹 gui 상의 그래픽으로 확인
+- 소수차 관련 FAQ 를 크롤링 한 뒤 저장 및 불러오기를 지원해 데이터 제공
+
+팀원 역할 분담 : 
+	
+1. MySQL DB 설계 및 데이터 저장			- 권소라
+2. 크롤링 - 파이썬 bs4, selenium 코드 작성	- 김지혜
+3. 파이썬과 MySQL 연동 조회 시스템 개발 	- 박희종
+4. streamlit 활용 데이터 조회 GUI 구현		- 최연우

@@ -93,6 +93,7 @@ for row in all_rows[header_row_idx + 1:]:
 
     for region, col_idx in region_col_map.items():
         raw   = row[col_idx]
+        # math.isnan(raw)이나 pd.isna(raw) 인지 raw == raw 로 체크
         count = int(raw) if isinstance(raw, (int, float)) and raw == raw else 0
         region_totals[region] += count
 ```
